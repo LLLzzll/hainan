@@ -6,6 +6,8 @@ import pandas as pd
 import streamlit as st
 import altair as alt
 import re
+import json
+import streamlit.components.v1 as components
 
 INDUSTRY_CODE = "882011.TI"
 INDUSTRY_MEMBERS_DATE = "2025-12-26"
@@ -93,6 +95,222 @@ def line_crosshair(
     if title:
         layered = layered.properties(title=title)
     return layered
+
+def echarts_line_crosshair(
+    df,
+    x_field: str,
+    y_field: str,
+    category_field: str | None = None,
+    title: str | None = None,
+    height: int = 420,
+    y_min: float | None = None,
+    y_max: float | None = None,
+    percent: bool = False,
+):
+    x_vals = df[x_field]
+    if pd.api.types.is_datetime64_any_dtype(x_vals) or pd.api.types.is_object_dtype(x_vals):
+        xs = [pd.to_datetime(x).strftime("%Y-%m-%d") for x in x_vals]
+    else:
+        xs = [str(x) for x in x_vals]
+    series = []
+    if category_field:
+        piv = df.pivot_table(index=x_field, columns=category_field, values=y_field, aggfunc="first")
+        xs = [pd.to_datetime(x).strftime("%Y-%m-%d") for x in piv.index]
+        for c in piv.columns:
+            vals = [None if pd.isna(v) else float(v) for v in piv[c].tolist()]
+            series.append({"name": str(c), "type": "line", "showSymbol": False, "smooth": True, "data": vals})
+        legend = {"data": [str(c) for c in piv.columns]}
+    else:
+        ys = [None if pd.isna(v) else float(v) for v in df[y_field]]
+        series.append({"type": "line", "showSymbol": False, "smooth": True, "lineStyle": {"width": 2}, "areaStyle": {}, "data": ys})
+        legend = None
+    container_id = f"echarts_{int(time.time()*1000)}"
+    option = {
+        "title": {"text": title or ""},
+        "tooltip": {"trigger": "axis", "axisPointer": {"type": "cross", "label": {"backgroundColor": "#6b7989"}}},
+        "xAxis": {"type": "category", "boundaryGap": False, "data": xs},
+        "yAxis": {"type": "value", "scale": True},
+        "grid": {"left": "8%", "right": "4%", "top": "10%", "bottom": "12%"},
+        "series": series,
+    }
+    if percent:
+        option["yAxis"]["max"] = 100
+        option["yAxis"]["name"] = "占比(%)"
+    if y_min is not None:
+        option["yAxis"]["min"] = y_min
+    if y_max is not None:
+        option["yAxis"]["max"] = y_max
+    if legend:
+        option["legend"] = legend
+    html = f"""
+    <div id="{container_id}" style="width:100%;height:{height}px;"></div>
+    <script>
+    const loadScript = (src) => new Promise((resolve, reject) => {{
+        const s = document.createElement('script');
+        s.src = src;
+        s.onload = resolve;
+        s.onerror = reject;
+        document.head.appendChild(s);
+    }});
+    (async () => {{
+        if (!window.echarts) {{
+            await loadScript("https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js");
+        }}
+        const chartDom = document.getElementById("{container_id}");
+        const myChart = echarts.init(chartDom);
+        const option = {json.dumps(option)};
+        // unify two-decimal display
+        if (!option.tooltip) option.tooltip = {{}};
+        option.tooltip.formatter = function(params) {{
+            const list = Array.isArray(params) ? params : [params];
+            const axisValue = (list[0] && (list[0].axisValue || list[0].name)) || '';
+            let s = '日期: ' + axisValue;
+            for (let i = 0; i < list.length; i++) {{
+                const p = list[i];
+                let v;
+                if (Array.isArray(p.data)) v = Number(p.data[1]);
+                else v = Number(p.data);
+                if (!isNaN(v)) {{
+                    const name = p.seriesName ? p.seriesName : '';
+                    s += '<br/>' + (name ? name + ': ' : '') + v.toFixed(2);
+                }}
+            }}
+            return s;
+        }};
+        if (option.tooltip.axisPointer && option.tooltip.axisPointer.label) {{
+            option.tooltip.axisPointer.label.formatter = function(params) {{
+                if (params.axisDimension === 'x') return params.value;
+                const v = Number(params.value);
+                return isNaN(v) ? '-' : v.toFixed(2);
+            }};
+        }}
+        if (!option.yAxis.axisLabel) option.yAxis.axisLabel = {{}};
+        option.yAxis.axisLabel.formatter = function(v) {{ return Number(v).toFixed(2); }};
+        myChart.setOption(option);
+        window.addEventListener('resize', () => myChart.resize());
+    }})();
+    </script>
+    """
+    components.html(html, height=height)
+
+def echarts_bar(
+    df,
+    x_field: str,
+    y_field: str,
+    category_field: str | None = None,
+    title: str | None = None,
+    height: int = 420,
+    show_labels: bool = True,
+    stacked: bool = False,
+    x_is_time: bool | None = None,
+):
+    df = df.copy()
+    df[y_field] = pd.to_numeric(df[y_field], errors="coerce")
+    x_vals = df[x_field]
+    if x_is_time is None:
+        name = str(x_field).lower()
+        x_is_time = pd.api.types.is_datetime64_any_dtype(x_vals) or (name in ["date", "time", "month", "day"])
+    if x_is_time:
+        xs = []
+        for x in x_vals:
+            try:
+                xs.append(pd.to_datetime(x, errors="coerce").strftime("%Y-%m-%d"))
+            except Exception:
+                xs.append(str(x))
+    else:
+        xs = [str(x) for x in x_vals]
+    series = []
+    legend = None
+    if category_field:
+        piv = df.pivot_table(index=x_field, columns=category_field, values=y_field, aggfunc="sum")
+        idx_is_time = pd.api.types.is_datetime64_any_dtype(piv.index)
+        if idx_is_time:
+            xs = []
+            for x in piv.index:
+                try:
+                    xs.append(pd.to_datetime(x, errors="coerce").strftime("%Y-%m-%d"))
+                except Exception:
+                    xs.append(str(x))
+        else:
+            xs = [str(x) for x in piv.index]
+        legend = {"data": [str(c) for c in piv.columns]}
+        for c in piv.columns:
+            col_vals = pd.to_numeric(piv[c], errors="coerce").fillna(0.0).tolist()
+            vals = [float(v) for v in col_vals]
+            s = {"name": str(c), "type": "bar", "data": vals}
+            if show_labels:
+                s["label"] = {"show": True, "position": "top"}
+            if stacked:
+                s["stack"] = "stack"
+            series.append(s)
+    else:
+        col_vals = pd.to_numeric(df[y_field], errors="coerce").fillna(0.0).tolist()
+        vals = [float(v) for v in col_vals]
+        s = {"type": "bar", "data": vals}
+        if show_labels:
+            s["label"] = {"show": True, "position": "top"}
+        series.append(s)
+    container_id = f"echarts_{int(time.time()*1000)}"
+    option = {
+        "title": {"text": title or ""},
+        "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
+        "xAxis": {"type": "category", "data": xs},
+        "yAxis": {"type": "value", "scale": True},
+        "grid": {"left": "8%", "right": "4%", "top": "10%", "bottom": "12%"},
+        "series": series,
+    }
+    if legend:
+        option["legend"] = legend
+    html = f"""
+    <div id="{container_id}" style="width:100%;height:{height}px;"></div>
+    <script>
+    const loadScript = (src) => new Promise((resolve, reject) => {{
+        const s = document.createElement('script');
+        s.src = src;
+        s.onload = resolve;
+        s.onerror = reject;
+        document.head.appendChild(s);
+    }});
+    (async () => {{
+        if (!window.echarts) {{
+            await loadScript("https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js");
+        }}
+        const chartDom = document.getElementById("{container_id}");
+        const myChart = echarts.init(chartDom);
+        const option = {json.dumps(option)};
+        // unify two-decimal display for bars
+        if (!option.tooltip) option.tooltip = {{}};
+        option.tooltip.formatter = function(params) {{
+            const list = Array.isArray(params) ? params : [params];
+            const name = (list[0] && (list[0].axisValueLabel || list[0].name)) || '';
+            let s = name;
+            for (let i = 0; i < list.length; i++) {{
+                const p = list[i];
+                const v = Number(p.value);
+                if (!isNaN(v)) {{
+                    s += '<br/>' + (p.seriesName ? p.seriesName + ': ' : '') + v.toFixed(2);
+                }}
+            }}
+            return s;
+        }};
+        if (!option.yAxis.axisLabel) option.yAxis.axisLabel = {{}};
+        option.yAxis.axisLabel.formatter = function(v) {{ return Number(v).toFixed(2); }};
+        if (Array.isArray(option.series)) {{
+            option.series.forEach(function(s) {{
+                if (s && s.label && s.label.show) {{
+                    s.label.formatter = function(p) {{
+                        const v = Number(p.value);
+                        return isNaN(v) ? '' : v.toFixed(2);
+                    }};
+                }}
+            }});
+        }}
+        myChart.setOption(option);
+        window.addEventListener('resize', () => myChart.resize());
+    }})();
+    </script>
+    """
+    components.html(html, height=height)
 
 def bar_crosshair(
     df,
@@ -304,8 +522,7 @@ def section_background(index_df: pd.DataFrame):
     st.subheader("1.1 板块指数全周期走势")
     if isinstance(index_df, pd.DataFrame) and not index_df.empty:
         closes_df = index_df.reset_index().rename(columns={"index": "date"})
-        chart = line_crosshair(closes_df, "date", "close", x_type="T", y_type="Q", title="1.1 板块指数全周期走势", value_format=".2f")
-        st.altair_chart(chart, use_container_width=True)
+        echarts_line_crosshair(closes_df, "date", "close", title="1.1 板块指数全周期走势")
     else:
         st.info("未能获取板块指数行情数据。")
 
@@ -362,32 +579,96 @@ def section_policy(index_df: pd.DataFrame):
         st.info("无法在指数数据中对齐政策日期。")
         return
     line_df = index_df.reset_index().rename(columns={"index": "date"})
-    merged = line_df.merge(pd.DataFrame(pts), on="date", how="left")
-    nearest = alt.selection_point(nearest=True, on="pointermove", fields=["date"], empty=False)
-    base = alt.Chart(merged).mark_line(color="#4e79a7").encode(x="date:O", y="close:Q")
-    selectors = alt.Chart(merged).mark_point().encode(x="date:O", opacity=alt.value(0)).add_params(nearest)
-    v_rule = alt.Chart(merged).mark_rule(color="#9aa0a6").encode(x="date:O").transform_filter(nearest)
-    h_rule = alt.Chart(merged).mark_rule(color="#9aa0a6").encode(y="close:Q").transform_filter(nearest)
-    tool = alt.Chart(merged).mark_rule(color="transparent").encode(
-        x="date:O",
-        tooltip=[
-            alt.Tooltip("date:T", title="日期"),
-            alt.Tooltip("close:Q", title="收盘价", format=".2f"),
-            alt.Tooltip("ptype:N", title="政策类型"),
-            alt.Tooltip("title:N", title="政策名称"),
-            alt.Tooltip("summary:N", title="摘要"),
-            alt.Tooltip("origin_date:T", title="政策发布时间"),
-        ],
-    ).transform_filter(nearest)
-    pt_df = pd.DataFrame(pts)
-    points = alt.Chart(pt_df).mark_point(filled=True, size=60).encode(
-        x="date:T",
-        y="value:Q",
-        color=alt.Color("ptype:N", legend=alt.Legend(title="政策类型")),
-        tooltip=["title:N", "summary:N", "ptype:N", "origin_date:T", "date:T"],
-    )
+    xs = [pd.to_datetime(x).strftime("%Y-%m-%d") for x in line_df["date"]]
+    ys = [None if pd.isna(v) else float(v) for v in line_df["close"]]
+    evt = []
+    for p in pts:
+        nm = pd.to_datetime(p["date"]).strftime("%Y-%m-%d")
+        od = pd.to_datetime(p["origin_date"]).strftime("%Y-%m-%d")
+        evt.append({"name": nm, "value": [nm, p["value"]], "ptype": p["ptype"], "title": p["title"], "summary": p["summary"], "origin_date": od})
+    container_id = f"echarts_{int(time.time()*1000)}"
+    legend = sorted(list(set([e["ptype"] for e in evt])))
+    html = f"""
+    <div id="{container_id}" style="width:100%;height:420px;"></div>
+    <script>
+    const loadScript = (src) => new Promise((resolve, reject) => {{
+        const s = document.createElement('script');
+        s.src = src;
+        s.onload = resolve;
+        s.onerror = reject;
+        document.head.appendChild(s);
+    }});
+    (async () => {{
+        if (!window.echarts) {{
+            await loadScript("https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js");
+        }}
+        const chartDom = document.getElementById("{container_id}");
+        const myChart = echarts.init(chartDom);
+        const xs = {json.dumps(xs)};
+        const ys = {json.dumps(ys)};
+        const events = {json.dumps(evt)};
+        const option = {{
+            title: {{ text: "2.1 政策事件时间标注" }},
+            tooltip: {{
+                trigger: 'axis',
+                axisPointer: {{ type: 'cross', snap: true, label: {{ backgroundColor: '#6b7989', formatter: function(params) {{
+                    if (params.axisDimension === 'x') return params.value;
+                    const v = Number(params.value);
+                    return isNaN(v) ? '-' : v.toFixed(2);
+                }} }} }},
+                formatter: function(params) {{
+                    if (Array.isArray(params)) {{
+                        const pLine = params.find(x => x.seriesType === 'line');
+                        const pEvt = params.find(x => x.seriesType === 'scatter');
+                        let d = '';
+                        let s = '';
+                        if (pLine) {{
+                            d = pLine.axisValue;
+                            const v = Number(pLine.data);
+                            s += '日期: ' + d + '<br/>收盘价: ' + (isNaN(v)?'-':v.toFixed(2));
+                        }}
+                        if (pEvt && pEvt.data) {{
+                            const val = pEvt.data.value[1];
+                            if (!d) d = pEvt.name;
+                            s = '日期: ' + d + '<br/>收盘价: ' + Number(val).toFixed(2);
+                            if (pEvt.data.ptype) s += '<br/>政策类型: ' + pEvt.data.ptype;
+                            if (pEvt.data.title) s += '<br/>政策名称: ' + pEvt.data.title;
+                            if (pEvt.data.summary) s += '<br/>摘要: ' + pEvt.data.summary;
+                            if (pEvt.data.origin_date) s += '<br/>政策发布时间: ' + pEvt.data.origin_date;
+                        }}
+                        return s;
+                    }} else {{
+                        if (params.seriesType === 'scatter') {{
+                            const d = params.name;
+                            const val = params.data.value[1];
+                            let s = '日期: ' + d + '<br/>收盘价: ' + Number(val).toFixed(2);
+                            if (params.data.ptype) s += '<br/>政策类型: ' + params.data.ptype;
+                            if (params.data.title) s += '<br/>政策名称: ' + params.data.title;
+                            if (params.data.summary) s += '<br/>摘要: ' + params.data.summary;
+                            if (params.data.origin_date) s += '<br/>政策发布时间: ' + params.data.origin_date;
+                            return s;
+                        }}
+                        const v = Number(params.data);
+                        return '日期: ' + params.name + '<br/>收盘价: ' + (isNaN(v)?'-':v.toFixed(2));
+                    }}
+                }}
+            }},
+            xAxis: {{ type: 'category', boundaryGap: false, data: xs }},
+            yAxis: {{ type: 'value', scale: true }},
+            grid: {{ left: '8%', right: '4%', top: '10%', bottom: '12%' }},
+            legend: {{ data: {json.dumps(legend)} }},
+            series: [
+                {{ type: 'line', smooth: true, showSymbol: false, data: ys }},
+                {{ type: 'scatter', symbolSize: 10, data: events, tooltip: {{ trigger: 'item' }}, z: 10 }}
+            ]
+        }};
+        myChart.setOption(option);
+        window.addEventListener('resize', () => myChart.resize());
+    }})();
+    </script>
+    """
     st.subheader("2.1 政策事件时间标注")
-    st.altair_chart((base + selectors + v_rule + h_rule + tool + points).properties(title="2.1 政策事件时间标注"), use_container_width=True)
+    components.html(html, height=420)
     st.subheader("2.2 政策总结")
     policies_sorted = policies.sort_values("date")
     lines = []
@@ -427,26 +708,14 @@ def section_capital_flow(members, start: str, end: str):
                 if summary_rows:
                     st.subheader(f"3.1 板块资金概况（区间：{start} 至 {end}）")
                     overview_df = pd.DataFrame(summary_rows)
-                    bars = bar_crosshair(overview_df, "type", "value", color_field=None, x_type="N", y_type="Q", title=f"3.1 板块资金概况（区间：{start} 至 {end}）", value_format=".2f")
-                    st.altair_chart(bars, use_container_width=True)
+                    echarts_bar(overview_df, "type", "value", title=f"3.1 板块资金概况（区间：{start} 至 {end}）")
                 plot_df_daily = df_group[show_cols].copy() / 10000.0
                 plot_df_daily = plot_df_daily.rename(columns={k: v for k, v in rename_map.items() if k in plot_df_daily.columns})
                 st.subheader("3.2 不同资金类型按日净流入走势（亿元）")
                 st.caption("主力=机构及大资金；超大单=特大单；大单/中单/小单分别代表不同成交额级别的资金净额")
                 daily_reset = plot_df_daily.reset_index().rename(columns={"index": "date"})
                 daily_long = daily_reset.melt(id_vars=["date"], var_name="type", value_name="value")
-                daily_chart = line_crosshair(
-                    daily_long,
-                    "date",
-                    "value",
-                    category_field="type",
-                    x_type="T",
-                    y_type="Q",
-                    title="3.2 不同资金类型按日净流入走势（亿元）",
-                    value_format=".2f",
-                    multi_tooltip=True,
-                )
-                st.altair_chart(daily_chart, use_container_width=True)
+                echarts_line_crosshair(daily_long, "date", "value", category_field="type", title="3.2 不同资金类型按日净流入走势（亿元）")
                 df_group = df_group.copy()
                 df_group.index = pd.to_datetime(df_group.index)
                 monthly_df = df_group[show_cols].resample("M").sum() / 10000.0
@@ -459,19 +728,7 @@ def section_capital_flow(members, start: str, end: str):
                 if "month" not in m_reset.columns:
                     m_reset.insert(0, "month", monthly_df.index.astype(str))
                 m_long = m_reset.melt(id_vars=["month"], var_name="type", value_name="value")
-                m_bars = bar_crosshair(
-                    m_long,
-                    "month",
-                    "value",
-                    color_field="type",
-                    x_type="N",
-                    y_type="Q",
-                    title="3.3 月度资金结构（亿元）",
-                    value_format=".1f",
-                    show_labels=False,
-                    show_multi_tooltip=True,
-                )
-                st.altair_chart(m_bars, use_container_width=True)
+                echarts_bar(m_long, "month", "value", category_field="type", title="3.3 月度资金结构（亿元）", show_labels=False)
     else:
         st.info("未能获取资金流向数据。")
 
@@ -499,8 +756,7 @@ def section_concepts(members, start: str, end: str):
                 if not ret_pct.empty:
                     ret_reset = ret_pct.reset_index().rename(columns={"index": "date"})
                     ret_long = ret_reset.melt(id_vars=["date"], var_name="code", value_name="ret_pct")
-                    chart = line_crosshair(ret_long, "date", "ret_pct", category_field="code", x_type="T", y_type="Q", title="4.1 赛道表现对比（区间涨跌幅）", value_format=".1f")
-                    st.altair_chart(chart, use_container_width=True)
+                    echarts_line_crosshair(ret_long, "date", "ret_pct", category_field="code")
     else:
         st.info("未能获取成分股价格数据。")
 
@@ -545,8 +801,7 @@ def section_constituents(members, start: str, end: str):
         top_reset = top_reset.rename(columns={"index": "code"})
     top_reset = top_reset.rename(columns={"区间收益率(%)": "value"})
     top_reset["label"] = top_reset["value"].round(1).astype(str)
-    top_chart = bar_crosshair(top_reset, "code", "value", x_type="N", y_type="Q", title="5.1 成分股区间收益率前十名", value_format=".1f")
-    st.altair_chart(top_chart, use_container_width=True)
+    echarts_bar(top_reset, "code", "value", title="5.1 成分股区间收益率前十名")
 
 
 def section_technical(index_df: pd.DataFrame):
@@ -563,18 +818,7 @@ def section_technical(index_df: pd.DataFrame):
             idx = pd.to_datetime(tech_df.index)
             tech_df = tech_df.assign(date=idx)
             tech_long = tech_df.melt(id_vars=["date"], var_name="series", value_name="value")
-            tech_chart = line_crosshair(
-                tech_long,
-                "date",
-                "value",
-                category_field="series",
-                x_type="T",
-                y_type="Q",
-                title="6.1 收盘价与均线走势",
-                value_format=".2f",
-                multi_tooltip=True,
-            )
-            st.altair_chart(tech_chart, use_container_width=True)
+            echarts_line_crosshair(tech_long, "date", "value", category_field="series", title="6.1 收盘价与均线走势")
         vol_cols = [c for c in df_numeric.columns if c in ["volume", "money"]]
         if vol_cols:
             vol_df = df_numeric[vol_cols].copy()
@@ -585,18 +829,7 @@ def section_technical(index_df: pd.DataFrame):
                 idx = pd.to_datetime(vol_df.index)
                 vol_df = vol_df.assign(date=idx)
                 vol_long = vol_df.reset_index().melt(id_vars=["date"], var_name="metric", value_name="value")
-                vol_chart = bar_crosshair(
-                    vol_long,
-                    "date",
-                    "value",
-                    color_field="metric",
-                    x_type="T",
-                    y_type="Q",
-                    title="6.2 成交量与成交额",
-                    value_format=".2f",
-                    show_multi_tooltip=True,
-                )
-                st.altair_chart(vol_chart, use_container_width=True)
+                echarts_bar(vol_long, "date", "value", category_field="metric", title="6.2 成交量与成交额")
         try:
             idx = pd.to_datetime(index_df.index)
             start_s = idx.min().strftime("%Y-%m-%d")
@@ -624,15 +857,13 @@ def section_technical(index_df: pd.DataFrame):
                         }
                     )
                     breadth_long = breadth_df.melt(id_vars=["date"], var_name="series", value_name="value")
-                    breadth_chart = line_crosshair(breadth_long, "date", "value", category_field="series", x_type="T", y_type="Q", title="6.2 站上均线占比（%）", value_format=".1f").encode(y=alt.Y("value:Q", title="占比(%)", scale=alt.Scale(domain=[0, 100])))
-                    st.altair_chart(breadth_chart, use_container_width=True)
+                    echarts_line_crosshair(breadth_long, "date", "value", category_field="series", title="6.2 站上均线占比（%）", percent=True, y_min=0, y_max=100)
                     ret = p_pivot.pct_change().dropna(how="all")
                     if not ret.empty:
                         st.subheader("6.3 上涨家数")
                         up_count = (ret > 0).sum(axis=1)
                         adv_df = pd.DataFrame({"date": pd.to_datetime(up_count.index), "上涨家数": up_count.values})
-                        adv_chart = line_crosshair(adv_df, "date", "上涨家数", x_type="T", y_type="Q", title="6.3 上涨家数", value_format="d")
-                        st.altair_chart(adv_chart, use_container_width=True)
+                        echarts_line_crosshair(adv_df, "date", "上涨家数", title="6.3 上涨家数")
         except Exception as _e:
             pass
 
@@ -671,8 +902,7 @@ def section_expectation(index_df: pd.DataFrame):
         m_reset = m_reset.rename(columns={"index": "month"})
     m_reset = m_reset.rename(columns={"月度收益率(%)": "value"})
     m_reset["label"] = m_reset["value"].round(1).astype(str)
-    m_bars = bar_crosshair(m_reset, "month", "value", x_type="N", y_type="Q", title="7.1 历史月度收益率（%）", value_format=".1f")
-    st.altair_chart(m_bars, use_container_width=True)
+    echarts_bar(m_reset, "month", "value", title="7.1 历史月度收益率（%）")
 
 
 def section_risk(index_df: pd.DataFrame):
@@ -699,14 +929,12 @@ def section_risk(index_df: pd.DataFrame):
     risk_line = risk_df[["最大回撤(%)"]].copy().reset_index()
     if "index" in risk_line.columns:
         risk_line = risk_line.rename(columns={"index": "date"})
-    rl_chart = line_crosshair(risk_line, "date", "最大回撤(%)", x_type="T", y_type="Q", title="8.1 指数最大回撤曲线（%）", value_format=".2f")
-    st.altair_chart(rl_chart, use_container_width=True)
+    echarts_line_crosshair(risk_line, "date", "最大回撤(%)", title="8.1 指数最大回撤曲线（%）")
     st.subheader("8.2 20日滚动年化波动率（%）")
     risk_vol = risk_df[["20日滚动年化波动率(%)"]].copy().reset_index()
     if "index" in risk_vol.columns:
         risk_vol = risk_vol.rename(columns={"index": "date"})
-    rv_chart = line_crosshair(risk_vol, "date", "20日滚动年化波动率(%)", x_type="T", y_type="Q", title="8.2 20日滚动年化波动率（%）", value_format=".2f")
-    st.altair_chart(rv_chart, use_container_width=True)
+    echarts_line_crosshair(risk_vol, "date", "20日滚动年化波动率(%)", title="8.2 20日滚动年化波动率（%）")
 
 
 def main():
