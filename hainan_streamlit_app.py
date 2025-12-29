@@ -12,6 +12,146 @@ INDUSTRY_MEMBERS_DATE = "2025-12-26"
 BASE_DIR = os.path.dirname(__file__)
 DATA_DIR = os.path.join(BASE_DIR, "data")
 
+def line_crosshair(
+    df,
+    x_field: str,
+    y_field: str,
+    category_field: str | None = None,
+    x_type: str = "T",
+    y_type: str = "Q",
+    title: str | None = None,
+    value_format: str = ".2f",
+    multi_tooltip: bool = False,
+    tooltip_title_map: dict | None = None,
+):
+    nearest = alt.selection_point(nearest=True, on="pointermove", fields=[x_field], empty=False)
+    base = alt.Chart(df)
+    enc_x = f"{x_field}:{x_type}"
+    enc_y = f"{y_field}:{y_type}"
+    if category_field:
+        sel_series = alt.selection_point(nearest=True, on="pointermove", fields=[category_field], empty=False)
+        line = base.mark_line().encode(
+            x=enc_x,
+            y=enc_y,
+            color=f"{category_field}:N",
+        ).add_params(sel_series)
+        selectors = base.mark_point().encode(
+            x=enc_x,
+            opacity=alt.value(0),
+        ).add_params(nearest)
+        points = line.mark_point().encode(
+            tooltip=[alt.Tooltip(enc_x),
+                     alt.Tooltip(f"{category_field}:N"),
+                     alt.Tooltip(enc_y, format=value_format)],
+        ).transform_filter(nearest).transform_filter(sel_series)
+        rules = base.mark_rule(color="#9aa0a6").encode(
+            x=enc_x,
+        ).transform_filter(nearest)
+        hrules = base.mark_rule(color="#9aa0a6").encode(
+            y=enc_y,
+        ).transform_filter(nearest).transform_filter(sel_series)
+        layered = alt.layer(line, selectors, points, rules, hrules)
+        if multi_tooltip:
+            cats = sorted(pd.Series(df[category_field]).dropna().unique().tolist())
+            pivot = base.transform_pivot(category_field, value=y_field, groupby=[x_field])
+            tooltips = []
+            for c in cats:
+                title = tooltip_title_map.get(c, c) if tooltip_title_map else c
+                tooltips.append(alt.Tooltip(str(c), type="quantitative", title=title, format=value_format))
+            rules_multi = pivot.mark_rule(color="#9aa0a6").encode(
+                x=enc_x,
+                tooltip=tooltips,
+            ).transform_filter(nearest)
+            layered = layered + rules_multi
+    else:
+        line = base.mark_line(color="#4e79a7").encode(
+            x=enc_x,
+            y=enc_y,
+        )
+        selectors = base.mark_point().encode(
+            x=enc_x,
+            opacity=alt.value(0),
+        ).add_params(nearest)
+        points = line.mark_point(color="#4e79a7").encode(
+            tooltip=[alt.Tooltip(enc_x), alt.Tooltip(enc_y, format=value_format)],
+        ).transform_filter(nearest)
+        rules = base.mark_rule(color="#9aa0a6").encode(
+            x=enc_x,
+        ).transform_filter(nearest)
+        hrules = base.mark_rule(color="#9aa0a6").encode(
+            y=enc_y,
+        ).transform_filter(nearest)
+        layered = alt.layer(line, selectors, points, rules, hrules)
+        if multi_tooltip:
+            pivot = base.transform_pivot(x_field, value=y_field, groupby=[x_field])
+            rules_multi = base.mark_rule(color="#9aa0a6").encode(
+                x=enc_x,
+                tooltip=[alt.Tooltip(enc_y, format=value_format)],
+            ).transform_filter(nearest)
+            layered = layered + rules_multi
+    if title:
+        layered = layered.properties(title=title)
+    return layered
+
+def bar_crosshair(
+    df,
+    x_field: str,
+    y_field: str,
+    color_field: str | None = None,
+    x_type: str = "N",
+    y_type: str = "Q",
+    title: str | None = None,
+    value_format: str = ".2f",
+    show_labels: bool = True,
+    show_multi_tooltip: bool = False,
+    tooltip_title_map: dict | None = None,
+):
+    nearest = alt.selection_point(nearest=True, on="pointermove", fields=[x_field], empty=False)
+    base = alt.Chart(df)
+    enc_x = f"{x_field}:{x_type}"
+    enc_y = f"{y_field}:{y_type}"
+    if color_field:
+        sel_cat = alt.selection_point(nearest=True, on="pointermove", fields=[color_field], empty=False)
+        bars = base.mark_bar().encode(
+            x=alt.X(enc_x),
+            y=alt.Y(enc_y),
+            color=f"{color_field}:N",
+            tooltip=[alt.Tooltip(enc_x), alt.Tooltip(f"{color_field}:N"), alt.Tooltip(enc_y, format=value_format)],
+        ).add_params(sel_cat)
+    else:
+        bars = base.mark_bar().encode(
+            x=alt.X(enc_x),
+            y=alt.Y(enc_y),
+            tooltip=[alt.Tooltip(enc_x), alt.Tooltip(enc_y, format=value_format)],
+        )
+    selectors = base.mark_point().encode(
+        x=enc_x,
+        opacity=alt.value(0),
+    ).add_params(nearest)
+    layered = alt.layer(bars, selectors)
+    if show_multi_tooltip and color_field:
+        cats = sorted(pd.Series(df[color_field]).dropna().unique().tolist())
+        pivot = base.transform_pivot(color_field, value=y_field, groupby=[x_field])
+        tooltips = []
+        for c in cats:
+            title = tooltip_title_map.get(c, c) if tooltip_title_map else c
+            tooltips.append(alt.Tooltip(str(c), type="quantitative", title=title, format=value_format))
+        rules_multi = pivot.mark_rule(color="transparent").encode(
+            x=enc_x,
+            tooltip=tooltips,
+        ).transform_filter(nearest)
+        layered = layered + rules_multi
+    if show_labels:
+        labels = base.mark_text(dy=-5, color="#dfe6f1").encode(
+            x=enc_x,
+            y=enc_y,
+            text=alt.Text(enc_y, format=value_format),
+        )
+        layered = layered + labels
+    if title:
+        layered = layered.properties(title=title)
+    return layered
+
 def code_to_jq(code: str) -> str:
     c = str(code).strip()
     if "." in c:
@@ -162,10 +302,7 @@ def section_background(index_df: pd.DataFrame):
     st.subheader("1.1 板块指数全周期走势")
     if isinstance(index_df, pd.DataFrame) and not index_df.empty:
         closes_df = index_df.reset_index().rename(columns={"index": "date"})
-        chart = alt.Chart(closes_df).mark_line(color="#4e79a7").encode(
-            x="date:T",
-            y=alt.Y("close:Q", title="收盘价")
-        ).properties(title="1.1 板块指数全周期走势")
+        chart = line_crosshair(closes_df, "date", "close", x_type="T", y_type="Q", title="1.1 板块指数全周期走势", value_format=".2f")
         st.altair_chart(chart, use_container_width=True)
     else:
         st.info("未能获取板块指数行情数据。")
@@ -223,7 +360,23 @@ def section_policy(index_df: pd.DataFrame):
         st.info("无法在指数数据中对齐政策日期。")
         return
     line_df = index_df.reset_index().rename(columns={"index": "date"})
-    base = alt.Chart(line_df).mark_line(color="#4e79a7").encode(x="date:T", y="close:Q")
+    merged = line_df.merge(pd.DataFrame(pts), on="date", how="left")
+    nearest = alt.selection_point(nearest=True, on="pointermove", fields=["date"], empty=False)
+    base = alt.Chart(merged).mark_line(color="#4e79a7").encode(x="date:O", y="close:Q")
+    selectors = alt.Chart(merged).mark_point().encode(x="date:O", opacity=alt.value(0)).add_params(nearest)
+    v_rule = alt.Chart(merged).mark_rule(color="#9aa0a6").encode(x="date:O").transform_filter(nearest)
+    h_rule = alt.Chart(merged).mark_rule(color="#9aa0a6").encode(y="close:Q").transform_filter(nearest)
+    tool = alt.Chart(merged).mark_rule(color="transparent").encode(
+        x="date:O",
+        tooltip=[
+            alt.Tooltip("date:T", title="日期"),
+            alt.Tooltip("close:Q", title="收盘价", format=".2f"),
+            alt.Tooltip("ptype:N", title="政策类型"),
+            alt.Tooltip("title:N", title="政策名称"),
+            alt.Tooltip("summary:N", title="摘要"),
+            alt.Tooltip("origin_date:T", title="政策发布时间"),
+        ],
+    ).transform_filter(nearest)
     pt_df = pd.DataFrame(pts)
     points = alt.Chart(pt_df).mark_point(filled=True, size=60).encode(
         x="date:T",
@@ -232,7 +385,7 @@ def section_policy(index_df: pd.DataFrame):
         tooltip=["title:N", "summary:N", "ptype:N", "origin_date:T", "date:T"],
     )
     st.subheader("2.1 政策事件时间标注")
-    st.altair_chart((base + points).properties(title="2.1 政策事件时间标注"), use_container_width=True)
+    st.altair_chart((base + selectors + v_rule + h_rule + tool + points).properties(title="2.1 政策事件时间标注"), use_container_width=True)
     st.subheader("2.2 政策总结")
     policies_sorted = policies.sort_values("date")
     lines = []
@@ -272,33 +425,25 @@ def section_capital_flow(members, start: str, end: str):
                 if summary_rows:
                     st.subheader(f"3.1 板块资金概况（区间：{start} 至 {end}）")
                     overview_df = pd.DataFrame(summary_rows)
-                    bars = alt.Chart(overview_df).mark_bar().encode(
-                        x=alt.X("type:N", title="资金类型", sort=None),
-                        y=alt.Y("value:Q", title="区间净流入（亿元）"),
-                        color=alt.Color("type:N", legend=None),
-                        tooltip=["type:N", "value:Q"],
-                    ).properties(title=f"3.1 板块资金概况（区间：{start} 至 {end}）")
-                    labels = alt.Chart(overview_df).mark_text(
-                        dy=-5,
-                        color="#dfe6f1"
-                    ).encode(
-                        x="type:N",
-                        y="value:Q",
-                        text=alt.Text("value:Q", format=".2f")
-                    )
-                    st.altair_chart((bars + labels).properties(title=f"3.1 板块资金概况（区间：{start} 至 {end}）"), use_container_width=True)
+                    bars = bar_crosshair(overview_df, "type", "value", color_field=None, x_type="N", y_type="Q", title=f"3.1 板块资金概况（区间：{start} 至 {end}）", value_format=".2f")
+                    st.altair_chart(bars, use_container_width=True)
                 plot_df_daily = df_group[show_cols].copy() / 10000.0
                 plot_df_daily = plot_df_daily.rename(columns={k: v for k, v in rename_map.items() if k in plot_df_daily.columns})
                 st.subheader("3.2 不同资金类型按日净流入走势（亿元）")
                 st.caption("主力=机构及大资金；超大单=特大单；大单/中单/小单分别代表不同成交额级别的资金净额")
                 daily_reset = plot_df_daily.reset_index().rename(columns={"index": "date"})
                 daily_long = daily_reset.melt(id_vars=["date"], var_name="type", value_name="value")
-                daily_chart = alt.Chart(daily_long).mark_line().encode(
-                    x="date:T",
-                    y=alt.Y("value:Q", title="净流入(亿元)"),
-                    color=alt.Color("type:N", legend=alt.Legend(title="资金类型")),
-                    tooltip=["date:T", "type:N", alt.Tooltip("value:Q", format=".2f")]
-                ).properties(title="3.2 不同资金类型按日净流入走势（亿元）")
+                daily_chart = line_crosshair(
+                    daily_long,
+                    "date",
+                    "value",
+                    category_field="type",
+                    x_type="T",
+                    y_type="Q",
+                    title="3.2 不同资金类型按日净流入走势（亿元）",
+                    value_format=".2f",
+                    multi_tooltip=True,
+                )
                 st.altair_chart(daily_chart, use_container_width=True)
                 df_group = df_group.copy()
                 df_group.index = pd.to_datetime(df_group.index)
@@ -312,13 +457,19 @@ def section_capital_flow(members, start: str, end: str):
                 if "month" not in m_reset.columns:
                     m_reset.insert(0, "month", monthly_df.index.astype(str))
                 m_long = m_reset.melt(id_vars=["month"], var_name="type", value_name="value")
-                m_bars = alt.Chart(m_long).mark_bar().encode(
-                    x=alt.X("month:N", title="月份"),
-                    y=alt.Y("value:Q", title="净流入(亿元)"),
-                    color=alt.Color("type:N", legend=alt.Legend(title="资金类型")),
-                    tooltip=["month:N", "type:N", alt.Tooltip("value:Q", format=".1f")]
-                ).properties(title="3.3 月度资金结构（亿元）")
-                st.altair_chart(m_bars.properties(title="3.3 月度资金结构（亿元）"), use_container_width=True)
+                m_bars = bar_crosshair(
+                    m_long,
+                    "month",
+                    "value",
+                    color_field="type",
+                    x_type="N",
+                    y_type="Q",
+                    title="3.3 月度资金结构（亿元）",
+                    value_format=".1f",
+                    show_labels=False,
+                    show_multi_tooltip=True,
+                )
+                st.altair_chart(m_bars, use_container_width=True)
     else:
         st.info("未能获取资金流向数据。")
 
@@ -346,12 +497,7 @@ def section_concepts(members, start: str, end: str):
                 if not ret_pct.empty:
                     ret_reset = ret_pct.reset_index().rename(columns={"index": "date"})
                     ret_long = ret_reset.melt(id_vars=["date"], var_name="code", value_name="ret_pct")
-                    chart = alt.Chart(ret_long).mark_line().encode(
-                        x="date:T",
-                        y=alt.Y("ret_pct:Q", title="区间涨跌幅(%)"),
-                        color=alt.Color("code:N", legend=alt.Legend(title="股票代码")),
-                        tooltip=["date:T", "code:N", alt.Tooltip("ret_pct:Q", format=".1f")]
-                    ).properties(title="4.1 赛道表现对比（区间涨跌幅）")
+                    chart = line_crosshair(ret_long, "date", "ret_pct", category_field="code", x_type="T", y_type="Q", title="4.1 赛道表现对比（区间涨跌幅）", value_format=".1f")
                     st.altair_chart(chart, use_container_width=True)
     else:
         st.info("未能获取成分股价格数据。")
@@ -397,20 +543,8 @@ def section_constituents(members, start: str, end: str):
         top_reset = top_reset.rename(columns={"index": "code"})
     top_reset = top_reset.rename(columns={"区间收益率(%)": "value"})
     top_reset["label"] = top_reset["value"].round(1).astype(str)
-    bars = alt.Chart(top_reset).mark_bar().encode(
-        x=alt.X("code:N", title="股票代码"),
-        y=alt.Y("value:Q", title="区间收益率(%)"),
-        tooltip=["code:N", alt.Tooltip("value:Q", format=".1f")]
-    ).properties(title="5.1 成分股区间收益率前十名")
-    text = alt.Chart(top_reset).mark_text(
-        dy=-5,
-        color="#dfe6f1"
-    ).encode(
-        x="code:N",
-        y="value:Q",
-        text="label:N"
-    )
-    st.altair_chart((bars + text).properties(title="5.1 成分股区间收益率前十名"), use_container_width=True)
+    top_chart = bar_crosshair(top_reset, "code", "value", x_type="N", y_type="Q", title="5.1 成分股区间收益率前十名", value_format=".1f")
+    st.altair_chart(top_chart, use_container_width=True)
 
 
 def section_technical(index_df: pd.DataFrame):
@@ -427,12 +561,17 @@ def section_technical(index_df: pd.DataFrame):
             idx = pd.to_datetime(tech_df.index)
             tech_df = tech_df.assign(date=idx)
             tech_long = tech_df.melt(id_vars=["date"], var_name="series", value_name="value")
-            tech_chart = alt.Chart(tech_long).mark_line().encode(
-                x="date:T",
-                y=alt.Y("value:Q", title="价格/均线"),
-                color=alt.Color("series:N", legend=alt.Legend(title="指标")),
-                tooltip=["date:T", "series:N", alt.Tooltip("value:Q", format=".2f")]
-            ).properties(title="6.1 收盘价与均线走势")
+            tech_chart = line_crosshair(
+                tech_long,
+                "date",
+                "value",
+                category_field="series",
+                x_type="T",
+                y_type="Q",
+                title="6.1 收盘价与均线走势",
+                value_format=".2f",
+                multi_tooltip=True,
+            )
             st.altair_chart(tech_chart, use_container_width=True)
         vol_cols = [c for c in df_numeric.columns if c in ["volume", "money"]]
         if vol_cols:
@@ -444,12 +583,17 @@ def section_technical(index_df: pd.DataFrame):
                 idx = pd.to_datetime(vol_df.index)
                 vol_df = vol_df.assign(date=idx)
                 vol_long = vol_df.reset_index().melt(id_vars=["date"], var_name="metric", value_name="value")
-                vol_chart = alt.Chart(vol_long).mark_bar().encode(
-                    x="date:T",
-                    y=alt.Y("value:Q", title="成交量/成交额"),
-                    color=alt.Color("metric:N", legend=alt.Legend(title="指标")),
-                    tooltip=["date:T", "metric:N", alt.Tooltip("value:Q", format=".2f")]
-                ).properties(title="6.2 成交量与成交额")
+                vol_chart = bar_crosshair(
+                    vol_long,
+                    "date",
+                    "value",
+                    color_field="metric",
+                    x_type="T",
+                    y_type="Q",
+                    title="6.2 成交量与成交额",
+                    value_format=".2f",
+                    show_multi_tooltip=True,
+                )
                 st.altair_chart(vol_chart, use_container_width=True)
         try:
             idx = pd.to_datetime(index_df.index)
@@ -478,23 +622,14 @@ def section_technical(index_df: pd.DataFrame):
                         }
                     )
                     breadth_long = breadth_df.melt(id_vars=["date"], var_name="series", value_name="value")
-                    breadth_chart = alt.Chart(breadth_long).mark_line().encode(
-                        x="date:T",
-                        y=alt.Y("value:Q", title="占比(%)", scale=alt.Scale(domain=[0, 100])),
-                        color=alt.Color("series:N", legend=alt.Legend(title="指标")),
-                        tooltip=["date:T", "series:N", alt.Tooltip("value:Q", format=".1f")],
-                    ).properties(title="6.2 站上均线占比（%）")
+                    breadth_chart = line_crosshair(breadth_long, "date", "value", category_field="series", x_type="T", y_type="Q", title="6.2 站上均线占比（%）", value_format=".1f").encode(y=alt.Y("value:Q", title="占比(%)", scale=alt.Scale(domain=[0, 100])))
                     st.altair_chart(breadth_chart, use_container_width=True)
                     ret = p_pivot.pct_change().dropna(how="all")
                     if not ret.empty:
                         st.subheader("6.3 上涨家数")
                         up_count = (ret > 0).sum(axis=1)
                         adv_df = pd.DataFrame({"date": pd.to_datetime(up_count.index), "上涨家数": up_count.values})
-                        adv_chart = alt.Chart(adv_df).mark_line().encode(
-                            x="date:T",
-                            y=alt.Y("上涨家数:Q", title="家数"),
-                            tooltip=["date:T", alt.Tooltip("上涨家数:Q", format="d")],
-                        ).properties(title="6.3 上涨家数")
+                        adv_chart = line_crosshair(adv_df, "date", "上涨家数", x_type="T", y_type="Q", title="6.3 上涨家数", value_format="d")
                         st.altair_chart(adv_chart, use_container_width=True)
         except Exception as _e:
             pass
@@ -534,20 +669,8 @@ def section_expectation(index_df: pd.DataFrame):
         m_reset = m_reset.rename(columns={"index": "month"})
     m_reset = m_reset.rename(columns={"月度收益率(%)": "value"})
     m_reset["label"] = m_reset["value"].round(1).astype(str)
-    m_bars = alt.Chart(m_reset).mark_bar().encode(
-        x=alt.X("month:N", title="月份"),
-        y=alt.Y("value:Q", title="月度收益率(%)"),
-        tooltip=["month:N", alt.Tooltip("value:Q", format=".1f")]
-    ).properties(title="7.1 历史月度收益率（%）")
-    m_text = alt.Chart(m_reset).mark_text(
-        dy=-5,
-        color="#dfe6f1"
-    ).encode(
-        x="month:N",
-        y="value:Q",
-        text="label:N"
-    )
-    st.altair_chart((m_bars + m_text).properties(title="7.1 历史月度收益率（%）"), use_container_width=True)
+    m_bars = bar_crosshair(m_reset, "month", "value", x_type="N", y_type="Q", title="7.1 历史月度收益率（%）", value_format=".1f")
+    st.altair_chart(m_bars, use_container_width=True)
 
 
 def section_risk(index_df: pd.DataFrame):
@@ -574,21 +697,13 @@ def section_risk(index_df: pd.DataFrame):
     risk_line = risk_df[["最大回撤(%)"]].copy().reset_index()
     if "index" in risk_line.columns:
         risk_line = risk_line.rename(columns={"index": "date"})
-    rl_chart = alt.Chart(risk_line).mark_line(color="#e15759").encode(
-        x="date:T",
-        y=alt.Y("最大回撤(%)", type="quantitative", title="最大回撤(%)"),
-        tooltip=["date:T", alt.Tooltip("最大回撤(%)", type="quantitative", format=".2f")]
-    ).properties(title="8.1 指数最大回撤曲线（%）")
+    rl_chart = line_crosshair(risk_line, "date", "最大回撤(%)", x_type="T", y_type="Q", title="8.1 指数最大回撤曲线（%）", value_format=".2f")
     st.altair_chart(rl_chart, use_container_width=True)
     st.subheader("8.2 20日滚动年化波动率（%）")
     risk_vol = risk_df[["20日滚动年化波动率(%)"]].copy().reset_index()
     if "index" in risk_vol.columns:
         risk_vol = risk_vol.rename(columns={"index": "date"})
-    rv_chart = alt.Chart(risk_vol).mark_line(color="#59a14f").encode(
-        x="date:T",
-        y=alt.Y("20日滚动年化波动率(%)", type="quantitative", title="年化波动率(%)"),
-        tooltip=["date:T", alt.Tooltip("20日滚动年化波动率(%)", type="quantitative", format=".2f")]
-    ).properties(title="8.2 20日滚动年化波动率（%）")
+    rv_chart = line_crosshair(risk_vol, "date", "20日滚动年化波动率(%)", x_type="T", y_type="Q", title="8.2 20日滚动年化波动率（%）", value_format=".2f")
     st.altair_chart(rv_chart, use_container_width=True)
 
 
