@@ -55,6 +55,7 @@ def line_crosshair(
             cats = sorted(pd.Series(df[category_field]).dropna().unique().tolist())
             pivot = base.transform_pivot(category_field, value=y_field, groupby=[x_field])
             tooltips = []
+            tooltips.append(alt.Tooltip(f"{x_field}:{x_type}", title="日期"))
             for c in cats:
                 title = tooltip_title_map.get(c, c) if tooltip_title_map else c
                 tooltips.append(alt.Tooltip(str(c), type="quantitative", title=title, format=value_format))
@@ -133,6 +134,7 @@ def bar_crosshair(
         cats = sorted(pd.Series(df[color_field]).dropna().unique().tolist())
         pivot = base.transform_pivot(color_field, value=y_field, groupby=[x_field])
         tooltips = []
+        tooltips.append(alt.Tooltip(f"{x_field}:{x_type}", title="日期"))
         for c in cats:
             title = tooltip_title_map.get(c, c) if tooltip_title_map else c
             tooltips.append(alt.Tooltip(str(c), type="quantitative", title=title, format=value_format))
